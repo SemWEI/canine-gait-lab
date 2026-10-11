@@ -106,6 +106,14 @@ pub struct BreedSpec {
     pub chest_depth: f64,
     /// Fraction of body weight on the forelimbs while standing.
     pub fore_weight_fraction: f64,
+    /// Chest width / withers height.
+    #[serde(default = "default_chest_width")]
+    pub chest_width: f64,
+    /// Standing fore / hind track (centre-to-centre paw spacing) / withers height.
+    #[serde(default = "default_fore_track")]
+    pub fore_track: f64,
+    #[serde(default = "default_hind_track")]
+    pub hind_track: f64,
     pub segments: Segments,
     #[serde(default)]
     pub stance: StanceDirs,
@@ -116,6 +124,16 @@ pub struct BreedSpec {
     pub chondrodystrophic: bool,
     #[serde(default)]
     pub notes: String,
+}
+
+fn default_chest_width() -> f64 {
+    0.30
+}
+fn default_fore_track() -> f64 {
+    0.26
+}
+fn default_hind_track() -> f64 {
+    0.24
 }
 
 /// Load presets from `assets/breeds.json` in the working directory if present (so researchers
@@ -182,6 +200,14 @@ pub struct Skeleton {
     pub hind_len: f64,
     pub chest_depth: f64,
     pub trunk_length: f64,
+
+    pub chest_width: f64,
+    /// Lateral offset of each shoulder / hip joint from the midline.
+    pub shoulder_half_w: f64,
+    pub hip_half_w: f64,
+    /// Standing lateral offset of the fore / hind paw centres from the midline.
+    pub fore_paw_half_base: f64,
+    pub hind_paw_half_base: f64,
 }
 
 impl Skeleton {
@@ -247,6 +273,11 @@ impl Skeleton {
             hind_len: fe + ti + mt,
             chest_depth: spec.chest_depth * hw,
             trunk_length: spec.trunk_length * hw,
+            chest_width: spec.chest_width * hw,
+            shoulder_half_w: 0.45 * spec.chest_width * hw,
+            hip_half_w: 0.40 * spec.chest_width * hw,
+            fore_paw_half_base: 0.5 * spec.fore_track * hw,
+            hind_paw_half_base: 0.5 * spec.hind_track * hw,
         }
     }
 }

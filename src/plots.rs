@@ -529,7 +529,7 @@ fn scalar_plot(
                 if let (Some(imp), Some(col)) = (d.imported, import_col)
                     && imp.has(col)
                 {
-                    let scale = if col == "com_y_m" { 100.0 } else { 1.0 };
+                    let scale = if col.ends_with("_m") { 100.0 } else { 1.0 };
                     let v: Vec<[f64; 2]> = imp
                         .pct
                         .iter()
@@ -685,8 +685,131 @@ pub fn grf(ui: &mut Ui, d: &PlotData) -> Option<f64> {
     scrub
 }
 
-/// Paw path relative to the scapular pivot (fore) or hip joint (hind), in centimetres.
-pub fn paw_paths(ui: &mut Ui, d: &PlotData, current: &Frame, current_cmp: Option<&Frame>) {
+/// Dashed overlay of an imported per-limb column, scaled by `scale`.
+fn import_overlay(pu: &mut PlotUi, d: &PlotData, limb: Limb, col: &str, scale: f64) {
+    if let Some(imp) = d.imported
+        && imp.has(col)
+    {
+        let v: Vec<[f64; 2]> = imp
+            .pct
+            .iter()
+            .zip(&imp.series[col])
+            .filter(|(_, y)| y.is_finite())
+            .map(|(&x, &y)| [d.import_x(x), y * scale])
+            .collect();
+        pu.line(
+            Line::new(format!("{} · data", limb.label()), PlotPoints::new(v))
+                .color(d.pal.limb[limb.idx()])
+                .width(1.5)
+                .style(LineStyle::Dashed { length: 6.0 }),
+        );
+    }
+}
+
+/// Frontal-plane panels: limb ab/adduction, lateral COM sway, trunk roll and ML GRF.
+pub fn frontal(ui: &mut Ui, d: &PlotData) -> Option<f64> {
+    legend_row(ui, d);
+    let h = ((ui.available_height() - 8.0) / 2.0 - 4.0).max(110.0);
+    let w = ((ui.available_width() - 12.0) / 2.0).max(160.0);
+    let mut scrub = None;
+    let limb_panel = |ui: &mut Ui,
+                      id: &str,
+                      title: &str,
+                      unit: &str,
+                      value: &dyn Fn(&Frame, usize) -> f64,
+                      col: &dyn Fn(Limb) -> String,
+                      scale: f64|
+     -> Option<f64> {
+        let mut out = None;
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            ui.label(egui::RichText::new(format!("{title} ({unit})")).strong());
+            let r = bare_plot(id, d, h - 18.0, unit).width(w).show(ui, |pu| {
+                pu.hline(
+                    HLine::new("", 0.0)
+                        .color(with_alpha(d.pal.text_muted, 120))
+                        .style(LineStyle::Dashed { length: 5.0 }),
+                );
+                for limb in LIMBS {
+                    limb_lines(
+                        pu,
+                        d,
+                        limb,
+                        &|f: &Frame| value(f, limb.idx()),
+                        None,
+                        JointMode::Angle,
+                        1.0,
+                        1.0,
+                    );
+                    import_overlay(pu, d, limb, &col(limb), scale);
+                }
+                finish(pu, d)
+            });
+            out = r.inner;
+        });
+        out
+    };
+    egui::Grid::new("frontal-grid")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            scrub = scrub.or(limb_panel(
+                ui,
+                "frontal-abd",
+                "Limb ab/adduction vs trunk, abduction +",
+                "deg",
+                &|f, i| f.limbs[i].abduction,
+                &|l| l.abduction_column(),
+                1.0,
+            ));
+            scrub = scrub.or(scalar_plot(
+                ui,
+                d,
+                "frontal-com-z",
+                "Lateral COM position, left +",
+                "cm",
+                w,
+                h,
+                &|f| f.com_z * 100.0,
+                Some("com_z_m"),
+                Some(0.0),
+            ));
+            ui.end_row();
+            scrub = scrub.or(scalar_plot(
+                ui,
+                d,
+                "frontal-roll",
+                "Trunk roll, left side up +",
+                "deg",
+                w,
+                h,
+                &|f| f.roll.to_degrees(),
+                Some("roll_deg"),
+                Some(0.0),
+            ));
+            scrub = scrub.or(limb_panel(
+                ui,
+                "frontal-grf-ml",
+                "Mediolateral GRF, toward left + (estimate)",
+                "%BW",
+                &|f, i| f.limbs[i].grf_ml_bw * 100.0,
+                &|l| format!("{}_grf_ml_bw", l.label()),
+                100.0,
+            ));
+            ui.end_row();
+        });
+    scrub
+}
+
+/// Paw path relative to the scapular pivot (fore) or hip joint (hind), in centimetres:
+/// sagittal (cranial, dorsal) or frontal (lateral, dorsal).
+pub fn paw_paths(
+    ui: &mut Ui,
+    d: &PlotData,
+    current: &Frame,
+    current_cmp: Option<&Frame>,
+    frontal: bool,
+) {
     let h = ui.available_height() - 4.0;
     let w = (ui.available_width() / 2.0 - 8.0).max(160.0);
     ui.horizontal_top(|ui| {
@@ -700,10 +823,15 @@ pub fn paw_paths(ui: &mut Ui, d: &PlotData, current: &Frame, current_cmp: Option
                 let i = limb.idx();
                 let rel = |f: &Frame| {
                     let l = &f.limbs[i];
-                    let r = l.pts[4] - l.pts[if limb.is_fore() { 0 } else { 1 }];
-                    [r.x * 100.0, r.y * 100.0]
+                    let k = if limb.is_fore() { 0 } else { 1 };
+                    let r = l.pts[4] - l.pts[k];
+                    if frontal {
+                        [(l.lat[4] - l.lat[k]) * 100.0, r.y * 100.0]
+                    } else {
+                        [r.x * 100.0, r.y * 100.0]
+                    }
                 };
-                Plot::new(format!("paw-{title}"))
+                Plot::new(format!("paw-{title}-{frontal}"))
                     .height(h - 18.0)
                     .width(w)
                     .data_aspect(1.0)
@@ -713,7 +841,11 @@ pub fn paw_paths(ui: &mut Ui, d: &PlotData, current: &Frame, current_cmp: Option
                             .background_alpha(0.75),
                     )
                     .show_background(false)
-                    .x_axis_label("cranial (cm)")
+                    .x_axis_label(if frontal {
+                        "lateral, left + (cm)"
+                    } else {
+                        "cranial (cm)"
+                    })
                     .y_axis_label("dorsal (cm)")
                     .show(ui, |pu| {
                         let c = d.pal.limb[i];

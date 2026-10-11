@@ -1,10 +1,11 @@
-//! Canine Gait Lab: a sagittal-plane simulator of canine walking, running and jumping for
-//! veterinary locomotion research.
+//! Canine Gait Lab: a simulator of canine walking, running and jumping for veterinary
+//! locomotion research, viewable from the side, the front or above.
 //!
 //! Run without arguments for the interactive app, optionally preconfigured:
 //!
 //! ```text
 //! canine_gait_lab --breed greyhound --gait rotary_gallop --fr 12 --compare "great dane" --tab footfall
+//! canine_gait_lab --breed labrador --gait pace --view front --tab frontal
 //! ```
 //!
 //! Headless batch export:
@@ -53,6 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         obstacle_cm: num("--obstacle-cm"),
         tab: get("--tab"),
         time_s: num("--time"),
+        view: get("--view").and_then(|v| render::View::from_name(&v)),
     };
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

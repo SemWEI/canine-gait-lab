@@ -23,13 +23,17 @@ pub struct Imported {
 }
 
 pub fn recognised_columns() -> Vec<String> {
-    let mut v = vec!["com_y_m".to_string(), "pitch_deg".to_string()];
+    let mut v: Vec<String> = ["com_y_m", "pitch_deg", "com_z_m", "roll_deg"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     for limb in LIMBS {
         for j in 0..3 {
             v.push(limb.angle_column(j));
         }
+        v.push(limb.abduction_column());
         let l = limb.label();
-        for suffix in ["contact", "grf_bw", "paw_x_m", "paw_y_m"] {
+        for suffix in ["contact", "grf_bw", "grf_ml_bw", "paw_x_m", "paw_y_m", "paw_z_m"] {
             v.push(format!("{l}_{suffix}"));
         }
     }
@@ -247,7 +251,7 @@ mod tests {
         assert!(
             imp.ignored_columns
                 .iter()
-                .all(|c| c.starts_with("com_") || c == "total_grf_bw")
+                .all(|c| c.starts_with("com_") || c.starts_with("total_grf"))
         );
         let n = imp.pct.len();
         for k in [0, n / 3, n / 2, n - 1] {
@@ -262,7 +266,13 @@ mod tests {
                         limb.angle_column(j)
                     );
                 }
+                let v = imp.value_at(&limb.abduction_column(), pct).unwrap();
+                assert!((v - f.limbs[li].abduction).abs() < 1e-4);
+                let z = imp.value_at(&format!("{}_paw_z_m", limb.label()), pct).unwrap();
+                assert!((z - f.limbs[li].lat[4]).abs() < 1e-5);
             }
+            let r = imp.value_at("roll_deg", pct).unwrap();
+            assert!((r - f.roll.to_degrees()).abs() < 1e-4);
         }
     }
 

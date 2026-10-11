@@ -1,10 +1,11 @@
 # Canine Gait Lab
 
 A native desktop simulator for studying how dogs of different breeds and sizes walk, trot, pace,
-canter, gallop and jump. It animates the dog in side view (the sagittal plane used in canine gait
-analysis) and plots the motion underneath as functions of the gait cycle: joint angles, angular
-velocity, footfall pattern, centre-of-mass motion, trunk pitch, estimated vertical ground reaction
-force and paw paths. It also imports measured kinematics as CSV so you can overlay them on the
+canter, gallop and jump. It animates the dog from the **side** (sagittal plane), the **front**
+(frontal plane) or from **above**, all driven by one 3-D model. Underneath, it plots the motion as
+functions of the gait cycle: joint angles, angular velocity, footfall pattern, centre-of-mass
+motion, trunk pitch and roll, limb ab/adduction, estimated vertical and mediolateral ground
+reaction forces, and paw paths. It also imports measured kinematics as CSV so you can overlay them on the
 model and quantify the difference.
 
 > **The built-in motion is a model, not measured data.** It is useful for teaching, for planning
@@ -24,7 +25,10 @@ Open it preconfigured:
 ```sh
 canine_gait_lab --breed greyhound --gait rotary_gallop --fr 12 --compare "great dane" --tab footfall
 canine_gait_lab --breed "border collie" --gait standing_jump --obstacle-cm 45
+canine_gait_lab --breed labrador --gait pace --view front --tab frontal
 ```
+
+`--view` takes `side`, `front` or `top`.
 
 Batch-export model series without the GUI:
 
@@ -48,6 +52,14 @@ canine_gait_lab --export out.csv --breed beagle --gait walk --fr 0.2 --height-cm
 - **Canvas:** body silhouette, a skeleton overlay with live joint angles, trails for the paw,
   carpus/hock and COM, ground-contact bars, GRF arrows, a centimetre grid and distance ticks.
   Scroll to zoom. A red ring marks a limb that is fully extended.
+- **Views:** switch between **Side | Front | Top** in the top bar, or press **V** to cycle.
+  - *Front:* the dog walks toward you, with its left on screen right. It shows trunk roll
+    (girdle tilt), lateral COM sway against the line of travel, live ab/adduction labels,
+    vertical + ML GRF arrows, frontal paw loops, and dimension lines for the fore and hind step
+    width.
+  - *Top:* footprints from the last two strides (tracking and step width), the support polygon of
+    the paws on the ground, the COM projection (with a red ring when it falls outside the
+    polygon) and ML GRF arrows.
 - **Compare:** a second breed in its own lane or overlaid as a ghost, at the same pixel scale so
   size differences are true. The clock can run in real time or be synchronised by gait phase.
 - **Charts:**
@@ -55,9 +67,11 @@ canine_gait_lab --export out.csv --breed beagle --gait walk --fr 0.2 --height-cm
   - Hildebrand-style footfall diagram.
   - COM height, vertical velocity, forward velocity and trunk pitch.
   - Fore, hind and total vertical GRF.
-  - Paw paths relative to the girdles.
+  - Frontal plane: limb ab/adduction, lateral COM position, trunk roll and ML GRF.
+  - Paw paths relative to the girdles, sagittal or frontal.
   - A metrics table: stride length and frequency, duty factor, footfall phases, peak GRF, COM
-    excursion, pitch range, and joint range of motion for every limb.
+    excursion, pitch range, step width, lateral sway, roll range, peak ML GRF, and joint range of
+    motion (including ab/adduction) for every limb.
 - **Data:**
   - Import CSV to overlay measured curves as dashed lines.
   - Per-joint RMSE, mean difference and Pearson r between your data and the model.
@@ -66,8 +80,13 @@ canine_gait_lab --export out.csv --breed beagle --gait walk --fr 0.2 --height-cm
 
 ## Conventions
 
-- **Coordinates:** sagittal plane, metres. x is cranial (direction of travel) and y is up. The
-  viewer sees the dog's left side, so LF and LH are the near limbs.
+- **Coordinates:** metres. x is cranial (direction of travel), y is up and z is lateral, positive
+  toward the dog's **left**. In the side view the viewer sees the dog's left side, so LF and LH
+  are the near limbs.
+- **Ab/adduction:** the tilt of the plane each limb flexes in (it contains the shoulder or hip
+  joint and the paw), measured relative to the rolled trunk. Positive means abducted (paw away
+  from the midline). Sagittal joint angles are measured inside that plane.
+- **Roll:** rotation of the trunk about its long axis, positive when the left side is up.
 - **Joint angles:** included angle on the **flexor side**, in degrees. 180° means the segments are
   straight; values above 180° mean hyperextension. For example, the carpus is about 190–200° under
   load.
@@ -79,7 +98,7 @@ canine_gait_lab --export out.csv --breed beagle --gait walk --fr 0.2 --height-cm
   - Tarsus: tibia vs metatarsus, dorsal side.
 - **Gait cycle:** 0 % is the reference touchdown (left hind for symmetric gaits, trailing right
   hind for the left-lead canter and gallops). Jumps are plotted against time.
-- **GRF:** body weights (%BW in charts).
+- **GRF:** body weights (%BW in charts). ML GRF is positive toward the dog's left.
 
 ## CSV format
 
@@ -93,6 +112,7 @@ blank cells count as missing.
 | `LH_hip_deg`, `LH_stifle_deg`, `LH_tarsus_deg`, and the same for `RH` | Hindlimb joint angles |
 | `{LF,RF,LH,RH}_contact` | 1 = stance, 0 = swing (optional) |
 | `{LF,RF,LH,RH}_grf_bw`, `com_y_m`, `pitch_deg` | Optional |
+| `{LF,RF,LH,RH}_abd_deg`, `{LF,RF,LH,RH}_grf_ml_bw`, `{LF,RF,LH,RH}_paw_z_m`, `com_z_m`, `roll_deg` | Optional, frontal plane (overlaid on the Frontal charts) |
 
 Other columns are listed as ignored. Parse errors give the line number and the column.
 
@@ -137,8 +157,24 @@ All of the following is in `src/model/`. Every constant is named and commented.
      Profiles are scaled so the stride impulse equals body weight × period, split fore/hind.
    - COM vertical motion and trunk pitch come from integrating those forces over the cycle
      (impulse–momentum), so the COM curves are consistent with the force curves.
-   - Horizontal forces are not modelled.
-5. **Jumps (`jump.rs`).**
+   - Fore–aft horizontal forces are not modelled.
+5. **Frontal plane (`frontal.rs`, `com.rs`, `sim.rs`).**
+   - Presets add `chest_width`, `fore_track` and `hind_track` (all / withers height; optional in
+     the JSON, with defaults 0.30 / 0.26 / 0.24). Shoulder and hip joints sit at 45 % and 40 % of
+     half the chest width from the midline.
+   - Step width narrows with speed as the paws converge toward the midline (single tracking):
+     `track · (floor + (1 − floor)·e^(−Fr/k))`. The floor depends on the gait: pacing keeps a wider
+     base than trotting or galloping. During swing, the paw adds a small outward arc.
+   - Each limb flexes in its own plane through the proximal joint and the paw, tilted by
+     ab/adduction. The sagittal two-link solution runs inside that plane, so segment lengths stay
+     exact (tested) and paws stay fixed in all three axes during stance.
+   - ML GRF is taken along the line from the paw toward the COM:
+     `−F_y · (z_paw − z̄) / h_COM`, where `z̄` is the load-weighted mean paw position, which gives
+     zero ML impulse per stride. Lateral COM sway comes from integrating it. Roll comes from
+     integrating the vertical-load moment about the long axis, as pitch does, with a radius of
+     gyration of 0.8 × withers height. The result is large sway and roll in walk and pace and
+     little in trot, where the diagonal pairs cancel.
+6. **Jumps (`jump.rs`).**
    - Phases: crouch or gather, constant-acceleration push-off, exact ballistic flight,
      forelimb-first landing with constant deceleration, then recovery steps.
    - Take-off vertical speed is √(2g·Δh), from the apex height needed to clear the obstacle with
@@ -147,7 +183,10 @@ All of the following is in `src/model/`. Every constant is named and commented.
 
 ### Known limitations
 
-- Single sagittal plane: there is no lateral motion, abduction or axial rotation.
+- The frontal-plane layer is a first-order extension. Track widths and the speed-convergence
+  constants are approximations, limb axial rotation and trunk yaw are not modelled, and jumps are
+  treated as bilaterally symmetric (no sway or roll).
+- ML GRF assumes a force line through the COM. Read its magnitude as an estimate.
 - Joint-angle templates are qualitative shapes chosen to look and behave plausibly. They are not
   fitted to a dataset, so read curve shapes as indicative, not normative.
 - Breed proportions are approximations from breed standards. Replace them with your subjects'
@@ -171,6 +210,10 @@ primary sources before citing any constant.
 - The same Froude number gives the same dimensionless stride across sizes.
 - The jump apex reaches the planned height within 1 %, and no limb is loaded in flight.
 - Every breed and gait combination produces finite values.
+- Frontal plane: no lateral paw slip in stance, and 3-D segment lengths are preserved. In
+  symmetric gaits, sway and roll are half-cycle mirror images with zero mean. ML GRF impulse is
+  zero over a stride (canter included). Pace sways and rolls more than trot, and step width
+  narrows with speed.
 - CSV export → import round trip, and parser error reporting.
 
 ## Layout
@@ -179,7 +222,9 @@ primary sources before citing any constant.
 src/main.rs            entry point, CLI
 src/app.rs             UI state and layout
 src/plots.rs           chart panels
-src/render/dog.rs      dog drawing and scene
+src/render/dog.rs      side view, scene and shared drawing helpers
+src/render/front.rs    front (frontal-plane) view
+src/render/top.rs      top (plan) view: footprints, support polygon
 src/model/             biomechanical model
 src/io/                CSV import / export
 assets/breeds.json     editable breed presets

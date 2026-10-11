@@ -11,7 +11,10 @@ use crate::model::sim::{Frame, SimParams, Simulation};
 use crate::model::{LIMBS, MODEL_VERSION};
 use crate::palette::{Palette, palette};
 use crate::plots::{self, JointMode, PlotData, Series};
+use crate::render::View;
 use crate::render::dog::{Cam, DrawOptions, draw_dog, draw_ground, draw_obstacle, draw_trails};
+use crate::render::front::{draw_front, draw_ground_front};
+use crate::render::top::{draw_ground_top, draw_top};
 use eframe::egui::{self, Align2, FontId, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,6 +23,7 @@ enum Tab {
     Footfall,
     Com,
     Grf,
+    Frontal,
     PawPaths,
     Metrics,
     Data,
@@ -96,9 +100,11 @@ pub struct GaitLabApp {
     opts: DrawOptions,
     cam_mode: CamMode,
     zoom: f32,
+    view: View,
 
     tab: Tab,
     joint_mode: JointMode,
+    paw_frontal: bool,
 
     imported: Option<Imported>,
     import_error: Option<String>,
@@ -119,6 +125,7 @@ pub struct StartOptions {
     pub obstacle_cm: Option<f64>,
     pub tab: Option<String>,
     pub time_s: Option<f64>,
+    pub view: Option<View>,
 }
 
 fn find_breed(breeds: &[BreedSpec], prefix: &str) -> usize {
@@ -169,8 +176,10 @@ impl GaitLabApp {
             opts: DrawOptions::default(),
             cam_mode: CamMode::Follow,
             zoom: 1.0,
+            view: start.view.unwrap_or(View::Side),
             tab: Tab::Joints,
             joint_mode: JointMode::Angle,
+            paw_frontal: false,
             imported: None,
             import_error: None,
             drive_from_import: false,
@@ -186,6 +195,7 @@ impl GaitLabApp {
                 "footfall" => Tab::Footfall,
                 "com" => Tab::Com,
                 "grf" => Tab::Grf,
+                "frontal" => Tab::Frontal,
                 "paw" => Tab::PawPaths,
                 "metrics" => Tab::Metrics,
                 "data" => Tab::Data,
@@ -352,6 +362,7 @@ fn frame_from_import(sim: &Simulation, mut f: Frame, imp: &Imported, pct: f64) -
         for l in f.limbs.iter_mut() {
             l.pts[0].y += dy;
             l.pts[1].y += dy;
+            l.plane.oy += dy;
         }
     }
     for (i, limb) in LIMBS.iter().enumerate() {
@@ -367,12 +378,15 @@ fn frame_from_import(sim: &Simulation, mut f: Frame, imp: &Imported, pct: f64) -
         } else {
             ([sk.femur, sk.tibia, sk.metatarsus], HIND_FLEXOR_CRANIAL)
         };
-        let mut pts = l.pts;
+        // forward kinematics in the limb's own (tilted) plane, then back to 3-D
+        let mut pts = l.pts.map(|q| l.plane.to_plane(q));
         for k in 0..3 {
             let prox_dir: V2 = (pts[k] - pts[k + 1]).norm();
             pts[k + 2] = pts[k + 1] + distal_dir_from_angle(prox_dir, ang[k], flex[k]) * lens[k];
         }
-        l.pts = pts;
+        for (k, &q) in pts.iter().enumerate() {
+            (l.pts[k], l.lat[k]) = l.plane.to_world(q);
+        }
         l.angles = [ang[0], ang[1], ang[2]];
         if let Some(c) = imp.value_at(&format!("{}_contact", limb.label()), pct) {
             l.contact = c > 0.5;
@@ -392,6 +406,13 @@ impl eframe::App for GaitLabApp {
         let pal = palette(ui.visuals().dark_mode);
         if self.dirty {
             self.rebuild();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::V)) && !ctx.egui_wants_keyboard_input() {
+            self.view = match self.view {
+                View::Side => View::Front,
+                View::Front => View::Top,
+                View::Top => View::Side,
+            };
         }
         if self.playing {
             let dt = ctx.input(|i| i.stable_dt).min(0.1) as f64;
@@ -448,6 +469,16 @@ impl GaitLabApp {
                     .show(ui, |ui| {
                         ui.label(RichText::new(txt).color(pal.text).size(12.0));
                     });
+                ui.separator();
+                ui.label("View");
+                for v in [View::Side, View::Front, View::Top] {
+                    ui.selectable_value(&mut self.view, v, v.label())
+                        .on_hover_text(match v {
+                            View::Side => "Sagittal plane, from the dog's left (V)",
+                            View::Front => "Frontal plane, dog walking toward you (V)",
+                            View::Top => "From above: footfalls and support polygon (V)",
+                        });
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::widgets::global_theme_preference_switch(ui);
                     ui.label(
@@ -646,14 +677,36 @@ impl GaitLabApp {
         ui.checkbox(&mut self.opts.skeleton, "Skeleton and joints");
         ui.checkbox(
             &mut self.opts.angle_labels,
-            "Joint angle labels (near limbs)",
+            if self.view == View::Front {
+                "Ab/adduction labels"
+            } else {
+                "Joint angle labels (near limbs)"
+            },
         );
-        ui.checkbox(&mut self.opts.trails, "Paw, carpus/hock and COM trails");
+        ui.checkbox(
+            &mut self.opts.trails,
+            match self.view {
+                View::Side => "Paw, carpus/hock and COM trails",
+                View::Front => "Paw and COM trails",
+                View::Top => "Footprints and COM trail",
+            },
+        );
         ui.checkbox(&mut self.opts.com_marker, "Centre of mass");
-        ui.checkbox(&mut self.opts.contacts, "Ground contact bars");
+        ui.checkbox(
+            &mut self.opts.contacts,
+            if self.view == View::Top {
+                "Support polygon and paw labels"
+            } else {
+                "Ground contact bars"
+            },
+        );
         ui.checkbox(
             &mut self.opts.grf_vectors,
-            "Vertical GRF arrows (0.5 × withers height = 1 BW)",
+            match self.view {
+                View::Side => "Vertical GRF arrows (0.5 × withers height = 1 BW)",
+                View::Front => "Vertical + ML GRF arrows (0.5 × withers height = 1 BW)",
+                View::Top => "ML GRF arrows (0.5 × withers height = 1 BW)",
+            },
         );
         ui.horizontal(|ui| {
             ui.label("Camera");
@@ -799,13 +852,29 @@ impl GaitLabApp {
                 })
             })
             .fold(0.0, f64::max);
+        let view = self.view;
         let extent = sims
             .iter()
-            .map(|s| s.sk.trunk_length + 1.8 * s.sk.withers_height)
+            .map(|s| match view {
+                View::Front => 1.3 * s.sk.withers_height,
+                _ => s.sk.trunk_length + 1.8 * s.sk.withers_height,
+            })
             .fold(0.0, f64::max);
         let lane_h = lanes[0].0.height();
-        let ppm =
-            ((lane_h - 44.0) / tall as f32).min(rect.width() * 0.7 / extent as f32) * self.zoom;
+        let ppm = match view {
+            View::Side => (lane_h - 44.0) / tall as f32,
+            View::Front => (lane_h - 70.0) / tall as f32,
+            // plan view: fit the widest stance plus room for the head and tail
+            View::Top => {
+                let wide = sims
+                    .iter()
+                    .map(|s| 1.2 * s.sk.withers_height)
+                    .fold(0.0, f64::max);
+                (lane_h - 60.0) / wide as f32
+            }
+        }
+        .min(rect.width() * 0.7 / extent as f32)
+            * self.zoom;
 
         for (lane, is_main) in &lanes {
             let lane_painter = painter.with_clip_rect(*lane);
@@ -831,14 +900,27 @@ impl GaitLabApp {
                     (lead_f.com.x / span).floor() * span + span * 0.5
                 }
             };
-            let anchor = pos2(lane.center().x, lane.bottom() - 30.0);
+            let (origin, anchor) = match view {
+                View::Side => (
+                    V2::new(cam_x, 0.0),
+                    pos2(lane.center().x, lane.bottom() - 30.0),
+                ),
+                // looking along the line of travel: keep the midline fixed so sway shows
+                View::Front => (V2::new(0.0, 0.0), pos2(lane.center().x, lane.bottom() - 56.0)),
+                View::Top => (V2::new(cam_x, 0.0), pos2(lane.center().x, lane.center().y + 6.0)),
+            };
             let cam = Cam {
-                origin: V2::new(cam_x, 0.0),
+                origin,
                 anchor,
                 ppm,
             };
-            draw_ground(&lane_painter, *lane, &cam, pal, hmax);
-            if let Some(j) = lead_sim.jump()
+            match view {
+                View::Side => draw_ground(&lane_painter, *lane, &cam, pal, hmax),
+                View::Front => draw_ground_front(&lane_painter, *lane, &cam, pal, hmax),
+                View::Top => draw_ground_top(&lane_painter, *lane, &cam, pal, hmax),
+            }
+            if view == View::Side
+                && let Some(j) = lead_sim.jump()
                 && j.obstacle_h > 0.0
             {
                 draw_obstacle(
@@ -852,7 +934,7 @@ impl GaitLabApp {
             }
             for &(s, f, t, ghost) in &draw_list {
                 // in overlay mode, each dog is centred on its own COM so postures superimpose
-                let cam_d = if ghost && self.cam_mode == CamMode::Follow {
+                let cam_d = if ghost && self.cam_mode == CamMode::Follow && view != View::Front {
                     Cam {
                         origin: V2::new(f.com.x, 0.0),
                         ..cam
@@ -861,9 +943,17 @@ impl GaitLabApp {
                     cam
                 };
                 if self.opts.trails && !ghost {
-                    draw_trails(&lane_painter, &cam_d, s, t, pal);
+                    draw_trails(&lane_painter, &cam_d, s, t, pal, view);
                 }
-                draw_dog(&lane_painter, &cam_d, s, f, &self.opts, pal, ghost);
+                match view {
+                    View::Side => draw_dog(&lane_painter, &cam_d, s, f, &self.opts, pal, ghost),
+                    View::Front => {
+                        draw_front(&lane_painter, &cam_d, s, f, &self.opts, pal, ghost)
+                    }
+                    View::Top => {
+                        draw_top(&lane_painter, &cam_d, s, f, t, &self.opts, pal, ghost)
+                    }
+                }
             }
             // lane caption
             let s = lead_sim;
@@ -896,6 +986,23 @@ impl GaitLabApp {
                 FontId::proportional(13.0),
                 pal.text,
             );
+            if view != View::Side && !(self.layout == Layout::Overlay && self.cmp.is_some()) {
+                let lead_f = draw_list.iter().find(|d| !d.3).map(|d| d.1).unwrap();
+                lane_painter.text(
+                    lane.left_top() + vec2(10.0, 26.0),
+                    Align2::LEFT_TOP,
+                    format!(
+                        "{} view · step width fore {:.1} / hind {:.1} cm · COM {:+.1} cm lateral · roll {:+.1}°",
+                        view.label(),
+                        2.0 * s.half_base[0] * 100.0,
+                        2.0 * s.half_base[1] * 100.0,
+                        lead_f.com_z * 100.0,
+                        lead_f.roll.to_degrees()
+                    ),
+                    FontId::proportional(12.0),
+                    pal.text_muted,
+                );
+            }
             if self.layout == Layout::Overlay
                 && *is_main
                 && let Some(c) = &self.cmp
@@ -950,6 +1057,7 @@ impl GaitLabApp {
                 (Tab::Footfall, "Footfall"),
                 (Tab::Com, "Centre of mass"),
                 (Tab::Grf, "Ground reaction force"),
+                (Tab::Frontal, "Frontal plane"),
                 (Tab::PawPaths, "Paw paths"),
                 (Tab::Metrics, "Metrics"),
                 (Tab::Data, "Data"),
@@ -964,6 +1072,11 @@ impl GaitLabApp {
                     JointMode::Velocity,
                     "Angular velocity",
                 );
+            }
+            if self.tab == Tab::PawPaths {
+                ui.separator();
+                ui.selectable_value(&mut self.paw_frontal, false, "Sagittal");
+                ui.selectable_value(&mut self.paw_frontal, true, "Frontal");
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
@@ -1021,10 +1134,11 @@ impl GaitLabApp {
             Tab::Footfall => plots::footfall(ui, &d),
             Tab::Com => plots::com(ui, &d),
             Tab::Grf => plots::grf(ui, &d),
+            Tab::Frontal => plots::frontal(ui, &d),
             Tab::PawPaths => {
                 let f = self.main.sim.sample(self.t);
                 let fc = self.cmp.as_ref().map(|c| c.sim.sample(self.cmp_time()));
-                plots::paw_paths(ui, &d, &f, fc.as_ref());
+                plots::paw_paths(ui, &d, &f, fc.as_ref(), self.paw_frontal);
                 None
             }
             Tab::Metrics => {
@@ -1195,6 +1309,33 @@ impl GaitLabApp {
                         )
                     });
                 }
+                row(ui, "Step width fore / hind (stance)", &|p| {
+                    format!(
+                        "{:.1} / {:.1} cm",
+                        2.0 * p.sim.half_base[0] * 100.0,
+                        2.0 * p.sim.half_base[1] * 100.0
+                    )
+                });
+                row(ui, "Lateral COM sway (range)", &|p| {
+                    let (a, b) = p.frames.iter().fold((f64::MAX, f64::MIN), |(a, b), f| {
+                        (a.min(f.com_z), b.max(f.com_z))
+                    });
+                    format!("{:.2} cm", (b - a) * 100.0)
+                });
+                row(ui, "Trunk roll range", &|p| {
+                    let (a, b) = p.frames.iter().fold((f64::MAX, f64::MIN), |(a, b), f| {
+                        (a.min(f.roll), b.max(f.roll))
+                    });
+                    format!("{:+.1}° to {:+.1}°", a.to_degrees(), b.to_degrees())
+                });
+                row(ui, "Peak ML GRF (any limb)", &|p| {
+                    let pk = p
+                        .frames
+                        .iter()
+                        .flat_map(|f| f.limbs.iter().map(|l| l.grf_ml_bw.abs()))
+                        .fold(0.0, f64::max);
+                    format!("{:.1} %BW", pk * 100.0)
+                });
                 row(ui, "Frames with a limb at full extension", &|p| {
                     let n = p
                         .frames
@@ -1235,6 +1376,17 @@ impl GaitLabApp {
                         }
                         ui.end_row();
                     }
+                    ui.label("ab/adduction (+ abd.)");
+                    for (i, _) in LIMBS.iter().enumerate() {
+                        let (a, b) = p.frames.iter().fold((f64::MAX, f64::MIN), |(a, b), f| {
+                            (a.min(f.limbs[i].abduction), b.max(f.limbs[i].abduction))
+                        });
+                        ui.label(
+                            RichText::new(format!("{a:+5.1}–{b:+5.1} ({:4.1})", b - a))
+                                .monospace(),
+                        );
+                    }
+                    ui.end_row();
                 });
         }
     }

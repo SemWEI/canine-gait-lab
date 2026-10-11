@@ -1,4 +1,5 @@
-//! Small 2-D vector toolkit for the sagittal-plane model (x forward, y up, metres).
+//! Small vector toolkit (x forward, y up, z to the dog's left, metres). Most of the model works
+//! in the sagittal plane with [`V2`]; [`V3`] is used where the lateral axis matters.
 
 use std::f64::consts::PI;
 use std::ops::{Add, AddAssign, Mul, Neg, Sub};
@@ -83,6 +84,33 @@ impl Neg for V2 {
     type Output = V2;
     fn neg(self) -> V2 {
         V2::new(-self.x, -self.y)
+    }
+}
+
+/// 3-D point: x cranial, y dorsal, z lateral (+ = the dog's left).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct V3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl V3 {
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    #[cfg(test)]
+    pub fn dist(self, o: V3) -> f64 {
+        let d = o - self;
+        (d.x * d.x + d.y * d.y + d.z * d.z).sqrt()
+    }
+}
+
+impl Sub for V3 {
+    type Output = V3;
+    fn sub(self, o: V3) -> V3 {
+        V3::new(self.x - o.x, self.y - o.y, self.z - o.z)
     }
 }
 

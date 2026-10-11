@@ -1,5 +1,7 @@
-//! Side-view (sagittal) drawing of the dog, its skeleton overlay and the measurement scene.
+//! Side-view (sagittal) drawing of the dog, its skeleton overlay and the measurement scene,
+//! plus the camera and shape helpers shared with the front and top views.
 
+use super::View;
 use crate::model::breed::EarType;
 use crate::model::math::{V2, rad};
 use crate::model::sim::{Frame, Simulation};
@@ -55,7 +57,7 @@ impl Cam {
     }
 }
 
-fn capsule(cam: &Cam, a: V2, b: V2, ra: f64, rb: f64) -> Vec<Pos2> {
+pub(crate) fn capsule(cam: &Cam, a: V2, b: V2, ra: f64, rb: f64) -> Vec<Pos2> {
     let u = (b - a).norm();
     let base = u.y.atan2(u.x);
     let mut pts = Vec::with_capacity(26);
@@ -71,7 +73,7 @@ fn capsule(cam: &Cam, a: V2, b: V2, ra: f64, rb: f64) -> Vec<Pos2> {
     pts
 }
 
-fn ellipse(cam: &Cam, c: V2, a: f64, b: f64, rot: f64) -> Vec<Pos2> {
+pub(crate) fn ellipse(cam: &Cam, c: V2, a: f64, b: f64, rot: f64) -> Vec<Pos2> {
     (0..28)
         .map(|i| {
             let t = 2.0 * PI * i as f64 / 28.0;
@@ -80,42 +82,42 @@ fn ellipse(cam: &Cam, c: V2, a: f64, b: f64, rot: f64) -> Vec<Pos2> {
         .collect()
 }
 
-fn fill(p: &Painter, pts: Vec<Pos2>, c: Color32) {
+pub(crate) fn fill(p: &Painter, pts: Vec<Pos2>, c: Color32) {
     p.add(Shape::convex_polygon(pts, c, Stroke::NONE));
 }
 
 /// Paint pass for the silhouette: normal, or an inflated single-colour halo drawn underneath
 /// so dark coats stay visible on a dark canvas (no internal seams, unlike per-shape strokes).
 #[derive(Clone, Copy)]
-struct Ink {
-    inflate: f64,
-    color: Option<Color32>,
+pub(crate) struct Ink {
+    pub(crate) inflate: f64,
+    pub(crate) color: Option<Color32>,
 }
 
 impl Ink {
-    const NORMAL: Ink = Ink {
+    pub(crate) const NORMAL: Ink = Ink {
         inflate: 0.0,
         color: None,
     };
 
-    fn fill(&self, p: &Painter, pts: Vec<Pos2>, c: Color32) {
+    pub(crate) fn fill(&self, p: &Painter, pts: Vec<Pos2>, c: Color32) {
         fill(p, pts, self.color.unwrap_or(c));
     }
 
-    fn capsule(&self, cam: &Cam, a: V2, b: V2, ra: f64, rb: f64) -> Vec<Pos2> {
+    pub(crate) fn capsule(&self, cam: &Cam, a: V2, b: V2, ra: f64, rb: f64) -> Vec<Pos2> {
         capsule(cam, a, b, ra + self.inflate, rb + self.inflate)
     }
 
-    fn ellipse(&self, cam: &Cam, c: V2, a: f64, b: f64, rot: f64) -> Vec<Pos2> {
+    pub(crate) fn ellipse(&self, cam: &Cam, c: V2, a: f64, b: f64, rot: f64) -> Vec<Pos2> {
         ellipse(cam, c, a + self.inflate, b + self.inflate, rot)
     }
 
-    fn halo(&self) -> bool {
+    pub(crate) fn halo(&self) -> bool {
         self.color.is_some()
     }
 }
 
-fn limb_color(pal: &Palette, limb: Limb) -> Color32 {
+pub(crate) fn limb_color(pal: &Palette, limb: Limb) -> Color32 {
     pal.limb[limb.idx()]
 }
 
@@ -422,26 +424,29 @@ pub fn draw_dog(
         }
     }
     if o.com_marker && !ghost {
-        let c = cam.pt(f.com);
-        let r = 6.0;
-        p.circle_filled(c, r, pal.joint_fill);
-        p.circle_stroke(c, r, Stroke::new(1.5, pal.com));
-        // quartered target, the conventional COM symbol
-        let q = |a0: f32| {
-            let mut pts = vec![c];
-            for k in 0..=6 {
-                let ang = a0 + k as f32 / 6.0 * std::f32::consts::FRAC_PI_2;
-                pts.push(c + vec2(ang.cos(), -ang.sin()) * r);
-            }
-            pts
-        };
-        p.add(Shape::convex_polygon(q(0.0), pal.com, Stroke::NONE));
-        p.add(Shape::convex_polygon(
-            q(std::f32::consts::PI),
-            pal.com,
-            Stroke::NONE,
-        ));
+        draw_com_marker(p, cam.pt(f.com), pal);
     }
+}
+
+/// The conventional quartered-target COM symbol.
+pub(crate) fn draw_com_marker(p: &Painter, c: Pos2, pal: &Palette) {
+    let r = 6.0;
+    p.circle_filled(c, r, pal.joint_fill);
+    p.circle_stroke(c, r, Stroke::new(1.5, pal.com));
+    let q = |a0: f32| {
+        let mut pts = vec![c];
+        for k in 0..=6 {
+            let ang = a0 + k as f32 / 6.0 * std::f32::consts::FRAC_PI_2;
+            pts.push(c + vec2(ang.cos(), -ang.sin()) * r);
+        }
+        pts
+    };
+    p.add(Shape::convex_polygon(q(0.0), pal.com, Stroke::NONE));
+    p.add(Shape::convex_polygon(
+        q(std::f32::consts::PI),
+        pal.com,
+        Stroke::NONE,
+    ));
 }
 
 fn draw_skeleton(
@@ -532,8 +537,9 @@ fn draw_skeleton(
     }
 }
 
-/// Recent paths of the near paws, near carpus/hock and the COM.
-pub fn draw_trails(p: &Painter, cam: &Cam, sim: &Simulation, t: f64, pal: &Palette) {
+/// Recent paths in the current view: the near paws and near carpus/hock (side), all four paws
+/// (front), plus the COM.
+pub fn draw_trails(p: &Painter, cam: &Cam, sim: &Simulation, t: f64, pal: &Palette, view: View) {
     let window = if sim.is_periodic() {
         sim.period.min(2.0)
     } else {
@@ -552,12 +558,22 @@ pub fn draw_trails(p: &Painter, cam: &Cam, sim: &Simulation, t: f64, pal: &Palet
             );
         }
     };
-    for i in [0usize, 2] {
-        let c = pal.limb[i];
-        draw(&|f: &Frame| f.limbs[i].pts[4], c, 1.6);
-        draw(&|f: &Frame| f.limbs[i].pts[3], c, 1.0);
+    match view {
+        View::Side => {
+            for i in [0usize, 2] {
+                let c = pal.limb[i];
+                draw(&|f: &Frame| f.limbs[i].pts[4], c, 1.6);
+                draw(&|f: &Frame| f.limbs[i].pts[3], c, 1.0);
+            }
+        }
+        View::Front => {
+            for i in 0..4 {
+                draw(&|f: &Frame| view.project(f.limb_pt3(i, 4)), pal.limb[i], 1.4);
+            }
+        }
+        View::Top => {}
     }
-    draw(&|f: &Frame| f.com, pal.com, 1.2);
+    draw(&|f: &Frame| view.project(f.com3()), pal.com, 1.2);
 }
 
 /// Ground line, distance ticks and height guides for one lane.

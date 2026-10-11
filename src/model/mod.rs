@@ -1,10 +1,12 @@
-//! Sagittal-plane biomechanical model of canine locomotion.
+//! Biomechanical model of canine locomotion: sagittal-plane kinematics and loads, extended to
+//! 3-D with a frontal-plane (mediolateral) layer for track width, sway, roll and ab/adduction.
 //!
 //! Everything here is a deterministic function of (breed, height, gait, speed, time), so the
 //! animation, the plots and exported CSV all read exactly the same numbers.
 
 pub mod breed;
 pub mod com;
+pub mod frontal;
 pub mod gait;
 pub mod grf;
 pub mod jump;
@@ -16,7 +18,7 @@ pub mod sim;
 pub const G: f64 = 9.81;
 
 /// Bumped whenever model equations or constants change; written into every export.
-pub const MODEL_VERSION: &str = "1.0.0";
+pub const MODEL_VERSION: &str = "1.1.0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Limb {
@@ -34,6 +36,11 @@ pub const HIND_JOINTS: [&str; 3] = ["hip", "stifle", "tarsus"];
 impl Limb {
     pub fn idx(self) -> usize {
         self as usize
+    }
+
+    /// +1 for left limbs, −1 for right limbs (the sign of their lateral z).
+    pub fn side(self) -> f64 {
+        if self.is_near() { 1.0 } else { -1.0 }
     }
 
     pub fn is_fore(self) -> bool {
@@ -74,5 +81,10 @@ impl Limb {
     /// CSV column name for a joint angle, e.g. `LF_elbow_deg`.
     pub fn angle_column(self, j: usize) -> String {
         format!("{}_{}_deg", self.label(), self.joints()[j])
+    }
+
+    /// CSV column name for the limb's ab/adduction, e.g. `LF_abd_deg`.
+    pub fn abduction_column(self) -> String {
+        format!("{}_abd_deg", self.label())
     }
 }

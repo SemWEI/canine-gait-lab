@@ -34,6 +34,9 @@ pub fn columns() -> Vec<String> {
         "com_vx_m_s",
         "com_vy_m_s",
         "pitch_deg",
+        "com_z_m",
+        "com_vz_m_s",
+        "roll_deg",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -42,15 +45,19 @@ pub fn columns() -> Vec<String> {
         for j in 0..3 {
             c.push(limb.angle_column(j));
         }
+        c.push(limb.abduction_column());
     }
     for limb in LIMBS {
         let l = limb.label();
         c.push(format!("{l}_paw_x_m"));
         c.push(format!("{l}_paw_y_m"));
+        c.push(format!("{l}_paw_z_m"));
         c.push(format!("{l}_contact"));
         c.push(format!("{l}_grf_bw"));
+        c.push(format!("{l}_grf_ml_bw"));
     }
     c.push("total_grf_bw".into());
+    c.push("total_grf_ml_bw".into());
     c
 }
 
@@ -63,20 +70,27 @@ fn row(f: &Frame, cycle_pct: f64, noise: &mut Noise, sd: f64) -> Vec<String> {
         format!("{:.6}", f.com_v.x),
         format!("{:.6}", f.com_v.y),
         format!("{:.6}", f.pitch.to_degrees()),
+        format!("{:.6}", f.com_z),
+        format!("{:.6}", f.com_vz),
+        format!("{:.6}", f.roll.to_degrees()),
     ];
     for l in &f.limbs {
         for a in l.angles {
             let n = if sd > 0.0 { noise.gauss() * sd } else { 0.0 };
             r.push(format!("{:.6}", a + n));
         }
+        r.push(format!("{:.6}", l.abduction));
     }
     for l in &f.limbs {
         r.push(format!("{:.6}", l.pts[4].x));
         r.push(format!("{:.6}", l.pts[4].y));
+        r.push(format!("{:.6}", l.lat[4]));
         r.push(if l.contact { "1".into() } else { "0".into() });
         r.push(format!("{:.6}", l.grf_bw));
+        r.push(format!("{:.6}", l.grf_ml_bw));
     }
     r.push(format!("{:.6}", f.total_grf()));
+    r.push(format!("{:.6}", f.total_grf_ml()));
     r
 }
 
