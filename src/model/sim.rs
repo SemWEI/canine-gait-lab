@@ -747,8 +747,8 @@ mod tests {
                 }
             }
             for f in &frames {
-                for i in 0..4 {
-                    let (l1, l2) = if LIMBS[i].is_fore() {
+                for (i, limb) in LIMBS.iter().enumerate() {
+                    let (l1, l2) = if limb.is_fore() {
                         (sk.humerus, sk.radius)
                     } else {
                         (sk.femur, sk.tibia)

@@ -402,6 +402,13 @@ fn fmt_speed(v: f64) -> String {
 
 impl eframe::App for GaitLabApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.frame_ui(ui);
+    }
+}
+
+impl GaitLabApp {
+    /// One UI pass: advance playback, then lay out every panel.
+    fn frame_ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let pal = palette(ui.visuals().dark_mode);
         if self.dirty {
@@ -654,9 +661,17 @@ impl GaitLabApp {
             let suffix = if periodic { " %" } else { " s" };
             if ui
                 .add(
+                    // Format the label only: `fixed_decimals` would round the value itself,
+                    // which egui reports as a change every frame and stopped playback.
                     egui::Slider::new(&mut x, range)
                         .suffix(suffix)
-                        .fixed_decimals(if periodic { 1 } else { 3 }),
+                        .custom_formatter(move |v, _| {
+                            if periodic {
+                                format!("{v:.1}")
+                            } else {
+                                format!("{v:.3}")
+                            }
+                        }),
                 )
                 .changed()
             {
@@ -1553,4 +1568,166 @@ fn stats(p: &[(f64, f64)]) -> (f64, f64, f64) {
     let va = p.iter().map(|(a, _)| (a - ma).powi(2)).sum::<f64>();
     let vb = p.iter().map(|(_, b)| (b - mb).powi(2)).sum::<f64>();
     (rmse, md, cov / (va * vb).sqrt())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drive the real UI headlessly for `n` frames at 60 Hz and return the app.
+    fn run_frames(app: &mut GaitLabApp, n: usize) -> usize {
+        let ctx = egui::Context::default();
+        let mut shapes = 0;
+        for _ in 0..n {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(1480.0, 940.0))),
+                predicted_dt: 1.0 / 60.0,
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| app.frame_ui(ui));
+            shapes = out.shapes.len();
+        }
+        shapes
+    }
+
+    #[test]
+    fn playback_advances_in_every_view_and_gait() {
+        for view in [View::Side, View::Front, View::Top] {
+            for gait in [Gait::Walk, Gait::Trot, Gait::Pace, Gait::RotaryGallop] {
+                let mut app = GaitLabApp::new(StartOptions {
+                    gait: Some(gait),
+                    view: Some(view),
+                    ..Default::default()
+                });
+                assert!(app.playing);
+                let shapes = run_frames(&mut app, 60);
+                // 60 frames at 1/60 s and 0.25x playback rate
+                let expect = 60.0 / 60.0 * app.rate;
+                assert!(
+                    (app.t - expect).abs() < 0.05,
+                    "{view:?} {gait:?}: t = {} (expected ~{expect})",
+                    app.t
+                );
+                assert!(shapes > 50, "{view:?} {gait:?}: only {shapes} shapes drawn");
+                // the canvas frame moves with time
+                let a = app.current_frame();
+                run_frames(&mut app, 10);
+                let b = app.current_frame();
+                assert!(a.t != b.t && (a.com.x != b.com.x || a.limbs[0].pts[4] != b.limbs[0].pts[4]));
+            }
+        }
+    }
+
+    #[test]
+    fn pause_holds_time_and_jumps_loop() {
+        let mut app = GaitLabApp::new(StartOptions {
+            gait: Some(Gait::Trot),
+            ..Default::default()
+        });
+        run_frames(&mut app, 10);
+        app.playing = false;
+        let t = app.t;
+        run_frames(&mut app, 20);
+        assert_eq!(app.t, t, "time moved while paused");
+
+        for view in [View::Side, View::Front, View::Top] {
+            let mut app = GaitLabApp::new(StartOptions {
+                gait: Some(Gait::StandingJump),
+                view: Some(view),
+                ..Default::default()
+            });
+            app.rate = 2.0;
+            let d = app.main.sim.duration;
+            let n = ((d / app.rate) * 60.0) as usize + 30;
+            run_frames(&mut app, n);
+            assert!(app.t <= d && app.t >= 0.0, "{view:?}: jump did not loop, t = {}", app.t);
+        }
+    }
+
+    #[test]
+    fn compare_overlay_and_lanes_play_in_every_view() {
+        for view in [View::Side, View::Front, View::Top] {
+            for layout in [Layout::Lanes, Layout::Overlay] {
+                let mut app = GaitLabApp::new(StartOptions {
+                    compare: Some("Dachshund".into()),
+                    view: Some(view),
+                    ..Default::default()
+                });
+                app.layout = layout;
+                run_frames(&mut app, 30);
+                assert!(app.cmp.is_some() && app.t > 0.0);
+            }
+        }
+    }
+
+    /// Screen position of the first text shape containing `label` in the last frame.
+    fn find_text(out: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(t.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn play_button_pauses_and_resumes() {
+        let mut app = GaitLabApp::new(StartOptions {
+            gait: Some(Gait::Trot),
+            ..Default::default()
+        });
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(1480.0, 940.0));
+        let frame = |app: &mut GaitLabApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                predicted_dt: 1.0 / 60.0,
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.frame_ui(ui))
+        };
+        let click = |pos: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+        let mut out = frame(&mut app, vec![]);
+        for _ in 0..30 {
+            out = frame(&mut app, vec![]);
+        }
+        assert!(app.playing && app.t > 0.1, "not playing on start: t = {}", app.t);
+
+        let pause = find_text(&out, "⏸ Pause").expect("Pause button drawn while playing");
+        frame(&mut app, click(pause));
+        assert!(!app.playing, "Pause click did not pause");
+        let mut out = frame(&mut app, vec![egui::Event::PointerGone]);
+        let t = app.t;
+        for _ in 0..20 {
+            out = frame(&mut app, vec![]);
+        }
+        assert_eq!(app.t, t, "time moved while paused");
+
+        let play = find_text(&out, "▶ Play").expect("Play button drawn while paused");
+        frame(&mut app, click(play));
+        assert!(app.playing, "Play click did not resume");
+        frame(&mut app, vec![egui::Event::PointerGone]);
+        for _ in 0..30 {
+            frame(&mut app, vec![]);
+        }
+        assert!(app.playing, "playback stopped by itself after resuming");
+        assert!(app.t > t + 0.1, "time did not advance after Play: {} -> {}", t, app.t);
+    }
 }
